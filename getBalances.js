@@ -46,7 +46,6 @@ async function getAllTokenBalances() {
             const batches = chunkArray(mintAddresses, 99);
 
             const bondedCoins = [];
-            const unbondedCoins = [];
             const currentMarketCaps = {};
 
             // Loop over batches and fetch prices for each
@@ -61,18 +60,12 @@ async function getAllTokenBalances() {
                         const marketCap = parseFloat(priceData) * 1e9;  // Multiply by 1 billion
                         bondedCoins.push({ mint, marketCap });
                         currentMarketCaps[mint] = marketCap;
-                    } else {
-                        unbondedCoins.push({ mint });
                     }
                 });
             }
 
             // Sort bonded coins by market cap in descending order
             bondedCoins.sort((a, b) => b.marketCap - a.marketCap);
-
-            // Save data to CSV files
-            saveToCSV(bondedCoins, 'tmp_data_bonded.csv', true);
-            saveToCSV(unbondedCoins, 'tmp_data_unbonded.csv', false);
 
             // Track and compare market cap changes
             trackMarketCapChanges(currentMarketCaps);
@@ -109,32 +102,10 @@ function chunkArray(array, size) {
     return result;
 }
 
-// Save data to CSV files
-function saveToCSV(data, fileName, isBonded) {
-    const headers = isBonded ? 'Mint,MarketCap\n' : 'Mint\n';
-    let csvContent = headers;
-
-    data.forEach((coin) => {
-        if (isBonded) {
-            csvContent += `${coin.mint},${coin.marketCap}\n`;
-        } else {
-            csvContent += `${coin.mint}\n`;
-        }
-    });
-
-    fs.writeFileSync(fileName, csvContent, { encoding: 'utf8' });
+// Save data to a JSON file
+function saveToJSON(data, fileName) {
+    fs.writeFileSync(fileName, JSON.stringify(data, null, 2), { encoding: 'utf8' });
     console.log(`Data saved to ${fileName}`);
-}
-
-// Define tranches based on market cap
-function getMarketCapTranche(marketCap) {
-    if (marketCap < 100000) return 'unbonded-bonded';
-    if (marketCap < 500000) return '0-100k';
-    if (marketCap < 1000000) return '100k-500k';
-    if (marketCap < 3000000) return '500k-1M';
-    if (marketCap < 10000000) return '1M-3M';
-    if (marketCap < 20000000) return '3M-10M';
-    return '10M-20M';
 }
 
 // Track market cap changes and compare with the previous run
@@ -152,31 +123,43 @@ function trackMarketCapChanges(currentMarketCaps) {
         const previousCap = previousData[mint];
 
         if (previousCap === undefined) {
-            // This token is newly bonded
-            notifyTelegram(mint, 'unbonded-bonded', currentCap);
-        } else {
-            const currentTranche = getMarketCapTranche(currentCap);
-            const previousTranche = getMarketCapTranche(previousCap);
+            // This token is newly added, skip notification
+            continue;
+        }
 
-            if (currentTranche !== previousTranche) {
-                // Tranche change detected, notify
-                notifyTelegram(mint, currentTranche, currentCap);
-            }
+        const currentTranche = getMarketCapTranche(currentCap);
+        const previousTranche = getMarketCapTranche(previousCap);
+
+        if (currentTranche !== previousTranche) {
+            // Tranche change detected, send notification
+            sendTelegramMessage(mint, currentTranche, currentCap);
         }
     }
 
     // Save the current market caps for the next comparison
-    fs.writeFileSync(PREVIOUS_MARKET_CAPS_FILE, JSON.stringify(currentMarketCaps, null, 2));
+    saveToJSON(currentMarketCaps, PREVIOUS_MARKET_CAPS_FILE);
 }
 
-// Send Telegram notification
-function notifyTelegram(mint, tranche, marketCap) {
-    const message = `Coin with Mint: ${mint} has moved to tranche: ${tranche} with Market Cap: ${marketCap}`;
+// Define tranches based on market cap
+function getMarketCapTranche(marketCap) {
+    if (marketCap < 100000) return 'unbonded-bonded';
+    if (marketCap < 500000) return '0-100k';
+    if (marketCap < 1000000) return '100k-500k';
+    if (marketCap < 3000000) return '500k-1M';
+    if (marketCap < 10000000) return '1M-3M';
+    if (marketCap < 20000000) return '3M-10M';
+    return '10M-20M';
+}
+
+// Send Telegram message with ticker, mint, and rounded market cap
+function sendTelegramMessage(mint, tranche, marketCap) {
+    const roundedMarketCap = Math.round(marketCap);
+    const message = `Ticker: ${tranche}, Mint: ${mint}, Market Cap: ${roundedMarketCap}`;
     bot.sendMessage(CHAT_ID, message);
 }
 
 // Schedule the script to run every hour
-cron.schedule('0 * * * *', () => {
+cron.schedule('*/5 * * * *', () => {
     console.log('Running the script...');
     getAllTokenBalances();
 });
